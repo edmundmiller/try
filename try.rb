@@ -1249,14 +1249,28 @@ if __FILE__ == $0
   def script_worktree(path, repo = nil)
     r = repo ? q(repo) : nil
     worktree_cmd = if r
-      "/usr/bin/env sh -c 'if git -C #{r} rev-parse --is-inside-work-tree >/dev/null 2>&1; then repo=$(git -C #{r} rev-parse --show-toplevel); git -C \"$repo\" worktree add --detach #{q(path)} >/dev/null 2>&1 || true; fi; exit 0'"
+      "/usr/bin/env sh -c 'if ! git -C #{r} rev-parse --is-inside-work-tree >/dev/null 2>&1; then echo \"Error: Not in a git repository\" >&2; exit 1; fi; repo=$(git -C #{r} rev-parse --show-toplevel); if ! git -C \"$repo\" worktree add --detach #{q(path)} 2>&1; then echo \"Error: Failed to create git worktree\" >&2; exit 1; fi'"
     else
-      "/usr/bin/env sh -c 'if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then repo=$(git rev-parse --show-toplevel); git -C \"$repo\" worktree add --detach #{q(path)} >/dev/null 2>&1 || true; fi; exit 0'"
+      "/usr/bin/env sh -c 'if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then echo \"Error: Not in a git repository\" >&2; exit 1; fi; repo=$(git rev-parse --show-toplevel); if ! git -C \"$repo\" worktree add --detach #{q(path)} 2>&1; then echo \"Error: Failed to create git worktree\" >&2; exit 1; fi'"
     end
     src = repo || Dir.pwd
-    ["mkdir -p #{q(path)}", "echo #{q(UI.expand_tokens("Using {b}git worktree{/b} to create this trial from #{src}."))}", worktree_cmd] + script_cd(path)
+    [worktree_cmd, "echo #{q(UI.expand_tokens("✓ Created worktree from #{src}"))}"] + script_cd(path)
   end
 
+  def script_jj_workspace(path, repo = nil)
+    r = repo ? q(repo) : nil
+    workspace_cmd = if r
+      "/usr/bin/env sh -c 'if ! jj -R #{r} root >/dev/null 2>&1; then echo \"Error: Not in a jj repository\" >&2; exit 1; fi; repo=$(jj -R #{r} root); if ! jj -R \"$repo\" workspace add #{q(path)} 2>&1; then echo \"Error: Failed to create jj workspace\" >&2; exit 1; fi'"
+    else
+      "/usr/bin/env sh -c 'if ! jj root >/dev/null 2>&1; then echo \"Error: Not in a jj repository\" >&2; exit 1; fi; repo=$(jj root); if ! jj -R \"$repo\" workspace add #{q(path)} 2>&1; then echo \"Error: Failed to create jj workspace\" >&2; exit 1; fi'"
+    end
+    src = repo || Dir.pwd
+    [workspace_cmd, "echo #{q(UI.expand_tokens("✓ Created workspace from #{src}"))}"] + script_cd(path)
+  end
+
+  def script_jj_clone(path, uri)
+    ["mkdir -p #{q(File.dirname(path))}", "echo #{q(UI.expand_tokens("Using {b}jj git clone{/b} to create this trial from #{uri}."))}", "jj git clone '#{uri}' #{q(path)}"] + script_cd(path)
+  end
   def script_delete(paths, base_path)
     cmds = ["cd #{q(base_path)}"]
     paths.each { |item| cmds << "[[ -d #{q(item[:basename])} ]] && rm -rf #{q(item[:basename])}" }
@@ -1335,9 +1349,29 @@ if __FILE__ == $0
     when 'worktree'
       ARGV.shift
       repo = ARGV.shift
-      repo_dir = repo && repo != 'dir' ? File.expand_path(repo) : Dir.pwd
-      full_path = worktree_path(tries_path, repo_dir, ARGV.join(' '))
+      # If repo looks like a path (contains / or is 'dir'), treat as repo; otherwise it's the name
+      if repo && (repo == 'dir' || repo.include?('/'))
+        repo_dir = repo == 'dir' ? Dir.pwd : File.expand_path(repo)
+        name = ARGV.join(' ')
+      else
+        repo_dir = Dir.pwd
+        name = [repo, *ARGV].join(' ')
+      end
+      full_path = worktree_path(tries_path, repo_dir, name)
       emit_script(script_worktree(full_path, repo_dir == Dir.pwd ? nil : repo_dir))
+    when 'workspace', 'jj-workspace'
+      ARGV.shift
+      repo = ARGV.shift
+      # If repo looks like a path (contains / or is 'dir'), treat as repo; otherwise it's the name
+      if repo && (repo == 'dir' || repo.include?('/'))
+        repo_dir = repo == 'dir' ? Dir.pwd : File.expand_path(repo)
+        name = ARGV.join(' ')
+      else
+        repo_dir = Dir.pwd
+        name = [repo, *ARGV].join(' ')
+      end
+      full_path = worktree_path(tries_path, repo_dir, name)
+      emit_script(script_jj_workspace(full_path, repo_dir == Dir.pwd ? nil : repo_dir))
     when 'cd'
       ARGV.shift
       script = cmd_cd!(ARGV, tries_path, and_type, and_exit, and_keys, and_confirm)
@@ -1364,6 +1398,20 @@ if __FILE__ == $0
     full_path = worktree_path(tries_path, repo_dir, ARGV.join(' '))
     # Explicit worktree command always emits worktree script
     emit_script(script_worktree(full_path, repo_dir == Dir.pwd ? nil : repo_dir))
+    exit 0
+  when 'workspace', 'jj-workspace'
+    repo = ARGV.shift
+    # If repo looks like a path (contains / or is 'dir'), treat as repo; otherwise it's the name
+    if repo && (repo == 'dir' || repo.include?('/'))
+      repo_dir = repo == 'dir' ? Dir.pwd : File.expand_path(repo)
+      name = ARGV.join(' ')
+    else
+      repo_dir = Dir.pwd
+      name = [repo, *ARGV].join(' ')
+    end
+    full_path = worktree_path(tries_path, repo_dir, name)
+    # Explicit workspace command always emits jj workspace script
+    emit_script(script_jj_workspace(full_path, repo_dir == Dir.pwd ? nil : repo_dir))
     exit 0
   else
     # Default: try [query] - same as try exec [query]
